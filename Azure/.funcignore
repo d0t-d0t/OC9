@@ -6,4 +6,4 @@ __queuestorage__
 local.settings.json
 test
 .venv
-model_assets
+model_assets/model.pkl

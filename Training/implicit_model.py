@@ -184,6 +184,22 @@ class ArticleRetrievalImplicit(pyfunc.PythonModel):
         return results
 
 
+def precompute_model_results(model, N=5):
+    """
+    Precompute recommendations for all known users
+    Returns: dict {user_id: list of recommended article_ids}
+    """
+    precomputed_results = {}
+    
+    for user_id in model.user_map.keys():
+        try:
+            recommendations = model.recommend(user_id, N=N)
+            precomputed_results[user_id] = [rec["article_id"] for rec in recommendations]
+        except Exception as e:
+            print(f"Error for user {user_id}: {e}")
+            precomputed_results[user_id] = []
+    
+    return precomputed_results
 
 def implicit_evaluation(pipeline:ArticleRetrievalImplicit, K=10):
     """Evaluate using implicit library metrics"""
