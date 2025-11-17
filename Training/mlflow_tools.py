@@ -16,3 +16,7 @@ def start_local_experiment( host='127.0.0.1',
     mlflow.set_tracking_uri(uri=f"http://{host}:{port}")
 
     mlflow.set_experiment(experiment_name)
+
+
+if __name__ == '__main__':
+    start_local_experiment()
