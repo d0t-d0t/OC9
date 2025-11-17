@@ -27,6 +27,9 @@ class ContentBasedRecommender(pyfunc.PythonModel):
         self.user_id_column = user_id_column
         if len(rating_target)>0:
             self.weight_column = rating_target[0]
+        else:
+            self.weight_column = 'weight'
+            rating_df[self.weight_column] = 1
 
         # self.item_ids = rating_df[candidate_id_column].unique()
         self.item_ids = candidate_df.index
@@ -58,8 +61,7 @@ class ContentBasedRecommender(pyfunc.PythonModel):
         self.build_faiss_index()
         self.faiss_batch_recommend()
         pass
-        
-        
+              
     def get_model_name(self):
         return self.name
     
@@ -73,35 +75,7 @@ class ContentBasedRecommender(pyfunc.PythonModel):
         item_ids = self.item_ids[idx[0]]
         scores = sims[0]
         return np.column_stack((item_ids, scores))
-    
-    # def faster_get_similar_items_to_user_profile(self, user_id, topn=1000):
-    #     #Get normalized user profile 
-    #     u = self.user_profiles[user_id]
-    #     u = u.toarray()          # (1, d)
-        
-    #     #Pre-normalized item matrix 
-    #     if not hasattr(self, "_normed_items"):
-    #         A = self.article_emmbeding_df.values.astype(np.float32)
-    #         norms = np.linalg.norm(A, axis=1, keepdims=True)
-    #         self._normed_items = A / (norms + 1e-9)   # (n_items, d)
 
-    #     # Cosine similarity = dot product
-    #     sims = (u @ self._normed_items.T).ravel()     # (n_items,)
-
-    #     #Partial top-k selection instead of full sort
-    #     if topn >= len(sims):
-    #         top_idx = np.argsort(sims)[::-1]
-    #     else:
-    #         top_idx = np.argpartition(sims, -topn)[-topn:]
-    #         top_idx = top_idx[np.argsort(sims[top_idx])[::-1]]
-
-    #     top_item_ids = self.item_ids[top_idx]
-    #     top_scores   = sims[top_idx]
-
-    #     #Build output list (item_id, score)*
-    #     return np.column_stack((top_item_ids, top_scores))
-    #     # return [(self.item_ids[i], sims[i]) for i in top_idx]
-        
     def _get_similar_items_to_user_profile(self, user_id, topn=1000):
         #Computes the cosine similarity between the user profile and all item profiles
         cosine_similarities = cosine_similarity(self.user_profiles[user_id], self.article_emmbeding_df)
@@ -110,32 +84,9 @@ class ContentBasedRecommender(pyfunc.PythonModel):
         #Sort the similar items by similarity
         similar_items = sorted([(self.item_ids[i], cosine_similarities[0,i]) for i in similar_indices], key=lambda x: -x[1])
         return similar_items
-        
-    # def recommend_items(self, user_id, items_to_ignore=[], topn=10, verbose=False):
-    #     similar_items = self.faiss_get_similar_items_to_user_profile(user_id)
-    #     #Ignores items the user has already interacted
-    #     # SLOW similar_items_filtered = list(filter(lambda x: x[0] not in items_to_ignore, similar_items))
 
-    #     ignore = set(items_to_ignore)
-    #     mask = ~np.isin([i for i, _ in similar_items], list(ignore))
-    #     similar_items_filtered = np.array(similar_items)[mask]
-        
-    #     recommendations_df = pd.DataFrame(similar_items_filtered, columns=[self.candidate_id_column, 'recStrength']) \
-    #                                 .head(topn)
-
-    #     if verbose:
-    #         # if self.items_df is None:
-    #         #     raise Exception('"items_df" is required in verbose mode')
-
-    #         # recommendations_df = recommendations_df.merge(self.items_df, how = 'left', 
-    #         #                                               left_on = 'contentId', 
-    #         #                                               right_on = 'contentId')[['recStrength', 'contentId', 'title', 'url', 'lang']]
-    #         pass
-
-    #     return recommendations_df
-    
     def faiss_recommend_items(self, user_id, items_to_ignore=[], topn=10):
-        uidx = np.where(self._user_list == user_id)[0][0]
+        uidx = self._user_to_idx[user_id]#np.where(self._user_list == user_id)[0][0]
 
         rec_ids = self.item_ids[self._faiss_idx[uidx]]
         rec_sims = self._faiss_sims[uidx]
@@ -167,68 +118,6 @@ class ContentBasedRecommender(pyfunc.PythonModel):
         item_profiles = scipy.sparse.vstack(item_profiles_list)
         return item_profiles
 
-    # def build_user_profile(self,user_id, interactions_indexed_df):
-    #     interactions_person_df = interactions_indexed_df.loc[user_id]
-    #     user_item_profiles = self.get_item_profiles(interactions_person_df[self.candidate_id_column].tolist())
-        
-    #     user_item_strengths = np.array(interactions_person_df[self.weight_column]).reshape(-1,1)
-
-    #     #Weighted average of item profiles by the interactions strength
-    #     user_item_strengths_weighted_avg = np.sum(user_item_profiles.multiply(user_item_strengths), axis=0) / np.sum(user_item_strengths)
-    #     user_profile_norm = user_item_strengths_weighted_avg #normalize?
-
-    #     return user_profile_norm
-
-    # def build_users_profiles(self,): 
-    #     interactions_indexed_df = self.interactions_train_df[self.interactions_train_df[self.candidate_id_column] \
-    #                                                 .isin(self.item_ids)].set_index(self.user_id_column)#articles_df['contentId']
-        
-    #     #SLOW ITER
-    #     for user_id in interactions_indexed_df.index.unique():
-    #         self.user_profiles[user_id] = self.build_user_profile(user_id, interactions_indexed_df)
-    #     return self.user_profiles
-    
-    # def fast_build_users_profiles(self):
-    #     df = (
-    #     self.interactions_train_df[
-    #         self.interactions_train_df[self.candidate_id_column].isin(self.item_ids)
-    #     ].set_index(self.user_id_column)
-    # )
-
-    #     # item_id already IS the row index – honor your design
-    #     df["idx"] = df[self.candidate_id_column].astype(int)
-
-    #     # Group once
-    #     grouped = df.groupby(self.user_id_column)
-
-    #     for user_id, grp in grouped:
-    #         rows = grp["idx"].values
-    #         weights = grp[self.weight_column].values.reshape(-1, 1)
-
-    #         # Vectorized sparse slice (real batch, no Python loop):
-    #         M = self.article_embeddings_sparse[rows]
-
-    #         # Weighted sum (sparse optimized)
-    #         weighted = M.multiply(weights).sum(axis=0)
-
-    #         weighted = np.asarray(weighted).ravel()
-    #         s = weights.sum()
-
-    #         if s != 0:
-    #             profile = weighted / s
-    #         else:
-    #             profile = weighted
-
-    #         # normalize
-    #         norm = np.linalg.norm(profile)
-    #         if norm > 0:
-    #             profile = profile / norm
-
-    #         # store as (1 × D) sparse row like before
-    #         self.user_profiles[user_id] = scipy.sparse.csr_matrix(profile)
-
-    #     return self.user_profiles
-    
     def even_faster_build_users_profiles(self):
         df = (
         self.interactions_train_df[
@@ -270,12 +159,14 @@ class ContentBasedRecommender(pyfunc.PythonModel):
         user_profiles_dense /= norms
 
         # Store in dict format
-        user_ids = uniques
+        # user_ids = uniques
         # user_ids = df.index.unique()
+        self._user_ids = uniques                                # array: user_idx → user_id
+        self._user_to_idx = {uid: i for i, uid in enumerate(uniques)} 
 
         self.user_profiles = {
             user_id: scipy.sparse.csr_matrix(user_profiles_dense[i])
-            for i, user_id in enumerate(user_ids)
+            for i, user_id in enumerate(self._user_ids)
         }
 
         return self.user_profiles

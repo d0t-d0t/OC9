@@ -166,11 +166,18 @@ class RecommendationModelEvaluator:
         # Prepare users
         users_list = np.array(self.test_interaction_df[model.user_id_column].unique())
         user_to_idx = {uid: i for i, uid in enumerate(users_list)}
+        item_id_to_idx = {id: idx for idx, id in enumerate(model.item_ids)}
         n_users = len(users_list)
     
         # Map test interactions to row/col indices for sparse matrix
         rows = self.test_interaction_df[model.user_id_column].map(user_to_idx).to_numpy()
-        cols = self.test_interaction_df[model.candidate_id_column].to_numpy()
+        # cols = self.test_interaction_df[model.candidate_id_column].to_numpy() OLD ASSUMING ROW ID alignement
+
+        cols = (
+                self.test_interaction_df[model.candidate_id_column]
+                .map(item_id_to_idx)
+                .to_numpy()
+            )
         data = np.ones_like(rows)
         test_interaction_mask = csr_matrix((data, (rows, cols)), shape=(n_users, len(model.item_ids)))
 
@@ -186,7 +193,7 @@ class RecommendationModelEvaluator:
 
             # Build FAISS recommendation matrix for this batch
             #uidx = np.where(self._user_list == user_id)[0][0]
-            batch_rec = np.vstack([model._faiss_idx[np.where(model._user_list == uid)[0][0]] for uid in batch_users])
+            batch_rec = np.vstack([model._faiss_idx[model._user_to_idx[uid]] for uid in batch_users])
 
             # Compute hits in sparse way
             hits_batch = np.array([
