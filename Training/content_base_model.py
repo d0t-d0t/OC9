@@ -21,7 +21,6 @@ class ContentBasedRecommender(pyfunc.PythonModel):
                 candidate_id_column = "article_id",
                 rating_target = 'time_per_word',
                 train_test_split_perc = None,
-                use_pca = False,
                 **kwargs):
         self.candidate_id_column = candidate_id_column
         self.user_id_column = user_id_column
