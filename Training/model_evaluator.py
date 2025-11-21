@@ -20,7 +20,6 @@ class RecommendationModelEvaluator:
 
         pass
 
-
     def get_not_interacted_items_sample(self, user_id, sample_size, seed=42):
         interacted = self.items_interacted_cache[user_id]
         non_interacted = list(self.all_items - interacted)
@@ -47,7 +46,7 @@ class RecommendationModelEvaluator:
             # hit = int(index in range(0, topn))
             # return hit, index
 
-    def evaluate_model_for_user(self, model, user_id):
+    def evaluate_model_for_user(self, model, user_id, k = 5):
         user_id = int(user_id)
         #Getting the items in test set
         interacted_values_testset = self.test_interaction_df.loc[
@@ -62,23 +61,15 @@ class RecommendationModelEvaluator:
         interacted_items_count_testset = len(person_interacted_items_testset) 
 
         #Getting a ranked recommendation list from a model for a given user
-        rec_ids,rec_sims = model.faiss_recommend_items(user_id, 
-                                               items_to_ignore=self.get_items_interacted(user_id, 
-                                                                                    ), 
-                                               topn=100)
-        # person_recs_df = model.recommend_items(user_id, 
-        #                                        items_to_ignore=self.get_items_interacted(user_id, 
-        #                                                                             ), 
-        #                                        topn=100)
-        
-        
+        rec_ids = model.recommend_items(user_id, 
+                                        topn=100)
+        rec_ids_k = rec_ids[:k]
 
-        hits_at_5_count = 0
-        hits_at_10_count = 0
-        #For each item the user has interacted in test set
+
+        hits_at_k_count = 0
+ 
+        #NEGATIVE SAMPLING EVALUATION
         for item_id in person_interacted_items_testset:
-            #Getting a random sample (100) items the user has not interacted 
-            #(to represent items that are assumed to be no relevant to the user)
             non_interacted_items_sample = self.get_not_interacted_items_sample(user_id, 
                                                                           sample_size=EVAL_RANDOM_SAMPLE_NON_INTERACTED_ITEMS, 
                                                                           seed=item_id%(2**32))
@@ -87,28 +78,28 @@ class RecommendationModelEvaluator:
             items_to_filter_recs = non_interacted_items_sample.union(set([item_id]))
 
             #Filtering only recommendations that are either the interacted item or from a random sample of 100 non-interacted items
-            # OLD SLOW valid_recs_df = person_recs_df[person_recs_df[model.candidate_id_column].isin(items_to_filter_recs)]   
-            # valid_recs = valid_recs_df[model.candidate_id_column].values    
-            # rec_ids = person_recs_df[model.candidate_id_column].values
             mask = np.isin(rec_ids, list(items_to_filter_recs))
             valid_recs = rec_ids[mask]
 
             #Verifying if the current interacted item is among the Top-N recommended items
-            hit_at_5, index_at_5 = self._verify_hit_top_n(item_id, valid_recs, 5)
-            hits_at_5_count += hit_at_5
-            hit_at_10, index_at_10 = self._verify_hit_top_n(item_id, valid_recs, 10)
-            hits_at_10_count += hit_at_10
+            hit_at_k, index_at_k = self._verify_hit_top_n(item_id, valid_recs, k)
+            hits_at_k_count += hit_at_k
+
 
         #Recall is the rate of the interacted items that are ranked among the Top-N recommended items, 
         #when mixed with a set of non-relevant items
-        recall_at_5 = hits_at_5_count / float(interacted_items_count_testset)
-        recall_at_10 = hits_at_10_count / float(interacted_items_count_testset)
+        recall_at_k = hits_at_k_count / float(interacted_items_count_testset)
 
-        person_metrics = {'hits@5_count':hits_at_5_count, 
-                          'hits@10_count':hits_at_10_count, 
+        hits_in_top_k = len(set(rec_ids_k) & person_interacted_items_testset)
+        precision_at_k = hits_in_top_k / float(k)
+
+
+
+        person_metrics = {'hits@k_count':hits_at_k_count, 
                           'interacted_count': interacted_items_count_testset,
-                          'recall@5': recall_at_5,
-                          'recall@10': recall_at_10}
+                          'recall@k': recall_at_k,
+                          'precision@k': precision_at_k,
+                          }
         return person_metrics
 
     def faiss_evaluate_model_for_user(self, model, user_id):
@@ -156,6 +147,15 @@ class RecommendationModelEvaluator:
         }
 
     def evaluate_model(self, model, topn=100,batch_size = 20000,k=5):
+        if hasattr(model, '_faiss_idx'):
+            func =  self.faiss_evaluate_model
+        else:
+            func = self.slow_evaluate_model
+
+        result = func(model, batch_size = batch_size, k=k)
+        return result
+
+    def faiss_evaluate_model(self, model, topn=100,batch_size = 20000,k=5):
         """
         Vectorized evaluation using precomputed FAISS recommendations.
         """
@@ -260,7 +260,7 @@ class RecommendationModelEvaluator:
 
         # Global metrics
         global_metrics = {
-            # f'modelName': model.get_model_name(),
+
             f'recall_at_{k}': recall_at_k_all.mean(),
             f'precision_at_{k}': precision_at_k_all.mean(),
             f'NDCG_at_{k}': ndcg_at_k_all.mean(),
@@ -270,14 +270,14 @@ class RecommendationModelEvaluator:
 
         return global_metrics#, detailed_results_df
 
-    def slow_evaluate_model(self, model):
+    def slow_evaluate_model(self, model,batch_size = 20000, k = 5):
         #print('Running evaluation for users')
         people_metrics = []
         users_list = list(self.test_interaction_df[model.user_id_column].unique())
         for idx, user_id in enumerate(users_list):
             if idx % 100 == 0 and idx > 0:
                print(f'{idx} users processed on {len(users_list)}')
-            person_metrics = self.faiss_evaluate_model_for_user(model, user_id)  
+            person_metrics = self.evaluate_model_for_user(model, user_id)  
             person_metrics['_user_id'] = user_id
             people_metrics.append(person_metrics)
         print('%d users processed' % idx)
@@ -285,28 +285,30 @@ class RecommendationModelEvaluator:
         detailed_results_df = pd.DataFrame(people_metrics) \
                             .sort_values('interacted_count', ascending=False)
         
-        global_recall_at_5 = detailed_results_df['hits@5_count'].sum() / float(detailed_results_df['interacted_count'].sum())
-        global_recall_at_10 = detailed_results_df['hits@10_count'].sum() / float(detailed_results_df['interacted_count'].sum())
+        global_recall_at_k = detailed_results_df['hits@k_count'].sum() / float(detailed_results_df['interacted_count'].sum())
+        global_precision_at_k =  detailed_results_df['precision@k'].mean()
         
-        global_metrics = {'modelName': model.get_model_name(),
-                          'recall@5': global_recall_at_5,
-                          'recall@10': global_recall_at_10}    
-        return global_metrics, detailed_results_df
+        global_metrics = {
+                          f'recall_at_{k}': global_recall_at_k,
+                          f'precision_at_{k}' : global_precision_at_k
+                          }    
+        return global_metrics
     
     def get_items_interacted(self,user_id,):
         return self.items_interacted_cache.get(user_id, set())
-    # # Get the user's data and merge in the movie information.
-    # interacted_items = interactions_df.loc[interactions_df[model.user_id_column] == person_id][model.candidate_id_column]
-    # return set(interacted_items if type(interacted_items) == pd.Series else [interacted_items])
-    
+
 #  
 if __name__ == '__main__':
     import pickle
-    CB_MODEL_PATH = 'Training/model_assets/cb_model.pkl'
-    with open(CB_MODEL_PATH, 'rb') as f:
+    # CB_MODEL_PATH = 'Training/model_assets/cb_model.pkl'
+    # with open(CB_MODEL_PATH, 'rb') as f:
+    #     model = pickle.load(f)
+    from popularity_model import PopularityArticleRecommender
+    POP_MODEL_PATH = 'Training/model_assets/pop_model.pkl'
+    with open(POP_MODEL_PATH, 'rb') as f:
         model = pickle.load(f)
 
     model_evaluator = RecommendationModelEvaluator(model)   
     print('Evaluating Content-Based Filtering model...')
-    cb_global_metrics = model_evaluator.evaluate_model(model)
+    cb_global_metrics = model_evaluator.faiss_evaluate_model(model)
     print('\nGlobal metrics:\n%s' % cb_global_metrics)
